@@ -1,108 +1,131 @@
 #include <iostream>
 #include <cmath>
 #include <cstring>
-#include <GLUT/glut.h> //this library is of macos hence will be worked on macos only
+#include <GLUT/glut.h>
 using namespace std;
 
-int* bufferPtr = nullptr;
-int bufferSize = 0;
-char headerLabel[120] = "";
-bool halfCycle = false;
+int* waveBuffer = nullptr;
+int waveSize = 0;
+char waveLabel[120] = "";
+bool isManchester = false;
 
-void codeNRZL(char* inputBits, int* encodedBits, int len) {
-    for (int i = 0; i < len; i++) encodedBits[i] = (inputBits[i] == '1') ? 1 : -1;
+void NRZLencode(char* bits, int* signal, int n) {
+    for (int i = 0; i < n; i++) signal[i] = (bits[i] == '1') ? 1 : -1;
 }
 
-void codeNRZI(char* inputBits, int* encodedBits, int len) {
-    int voltage = -1;
-    for (int i = 0; i < len; i++) {
-        if (inputBits[i] == '1') voltage = -voltage;
-        encodedBits[i] = voltage;
+void NRZIencode(char* bits, int* signal, int n) {
+    int current = -1;
+    for (int i = 0; i < n; i++) {
+        if (bits[i] == '1') current = -current;
+        signal[i] = current;
     }
 }
 
-void codeManchester(char* inputBits, int* encodedBits, int len) {
-    for (int i = 0; i < len; i++) {
-        if (inputBits[i] == '0') {
-            encodedBits[2*i] = 1;
-            encodedBits[2*i + 1] = -1;
-        } else {
-            encodedBits[2*i] = -1;
-            encodedBits[2*i + 1] = 1;
-        }
+void ManchesterEncode(char* bits, int* signal, int n) {
+    for (int i = 0; i < n; i++) {
+        if (bits[i] == '0') { signal[2*i] = 1; signal[2*i+1] = -1; }
+        else { signal[2*i] = -1; signal[2*i+1] = 1; }
     }
 }
 
-void codeDiffManchester(char* inputBits, int* encodedBits, int len) {
+void DiffManchesterEncode(char* bits, int* signal, int n) {
     int level = -1;
-    for (int i = 0; i < len; i++) {
-        if (inputBits[i] == '0') {
-            level = -level;
-            encodedBits[2*i] = level;
-            encodedBits[2*i + 1] = -level;
-        } else {
-            encodedBits[2*i] = level;
-            encodedBits[2*i + 1] = -level;
-        }
+    for (int i = 0; i < n; i++) {
+        if (bits[i] == '0') level = -level;
+        signal[2*i] = level;
+        signal[2*i+1] = -level;
         level = -level;
     }
 }
 
-void codeAMI(char* inputBits, int* encodedBits, int len) {
+void AMIencode(char* bits, int* signal, int n) {
     int polarity = 1;
-    for (int i = 0; i < len; i++) {
-        if (inputBits[i] == '0') encodedBits[i] = 0;
-        else {
-            encodedBits[i] = polarity;
-            polarity = -polarity;
+    for (int i = 0; i < n; i++) {
+        if (bits[i] == '0') signal[i] = 0;
+        else { signal[i] = polarity; polarity = -polarity; }
+    }
+}
+
+void B8ZSscramble(int* signal, int len) {
+    // last non-zero polarity seen so far; default +1 (if none seen yet)
+    int lastPolarity = 1;
+    for (int i = 0; i <= len - 8; ++i) {
+        if (signal[i] != 0) lastPolarity = signal[i];
+
+        // check 8 zeros starting at i
+        bool allZeros = true;
+        for (int j = 0; j < 8; ++j) {
+            if (signal[i + j] != 0) { allZeros = false; break; }
+        }
+        if (!allZeros) continue;
+
+        int V = lastPolarity;    // violation = same as last non-zero
+        int B = -V;              // bipolar opposite
+
+        // canonical B8ZS substitution (positions relative to i):
+        // i:0 i+1:0 i+2:0 i+3:V i+4:B i+5:0 i+6:B i+7:V
+        signal[i + 3] = V;
+        signal[i + 4] = B;
+        signal[i + 5] = 0;
+        signal[i + 6] = B;
+        signal[i + 7] = V;
+
+        // update lastPolarity to the last non-zero we just put (i+7)
+        lastPolarity = signal[i + 7];
+
+        // skip past the replaced block
+        i += 7;
+    }
+}
+
+
+
+
+void HDB3scramble(int* signal, int n) {
+    int zeroCount = 0;
+    bool flag = true;      // toggles substitution rule between B00V and 000V
+    bool prevPositive = true; // tracks AMI polarity (true = +1, false = -1)
+
+    for (int i = 0; i < n; i++) {
+        if (signal[i] != 0) {
+            // Normal AMI pulse → update polarity and reset zero count
+            zeroCount = 0;
+            flag = !flag;
+            prevPositive = (signal[i] > 0);
+        } else {
+            zeroCount++;
+        }
+
+        if (zeroCount == 4) {
+            if (flag) {
+                // B00V pattern (even case)
+                signal[i - 3] = prevPositive ? -1 : 1;  // B = opposite polarity
+                signal[i] = prevPositive ? -1 : 1;      // V = opposite polarity
+            } else {
+                // 000V pattern (odd case)
+                signal[i] = prevPositive ? 1 : -1;      // V = same polarity
+            }
+
+            zeroCount = 0;
+            flag = true;
+            prevPositive = (signal[i] > 0);
         }
     }
 }
 
-void scrambleB8ZS(int* arr, int n) {
-    int polarity = 1;
-    for (int i = 0; i <= n - 8; i++) {
-        if (arr[i] != 0) polarity = arr[i];
-        bool zeroSeq = true;
-        for (int j = i; j < i + 8; j++) if (arr[j] != 0) { zeroSeq = false; break; }
-        if (zeroSeq) {
-            arr[i+3] = polarity;
-            arr[i+4] = -polarity;
-            arr[i+6] = polarity;
-            arr[i+7] = -polarity;
-            polarity = -polarity;
-            i += 7;
-        }
-    }
-}
 
-void scrambleHDB3(int* arr, int n) {
-    int ones = 0, polarity = 1;
-    for (int i = 0; i <= n - 4; i++) {
-        if (arr[i] != 0) { polarity = arr[i]; ones++; }
-        bool zeros = true;
-        for (int j = i; j < i + 4; j++) if (arr[j] != 0) { zeros = false; break; }
-        if (zeros) {
-            if (ones % 2 == 0) { arr[i] = -polarity; arr[i+3] = polarity; }
-            else arr[i+3] = polarity;
-            polarity = -polarity;
-            ones = 1;
-            i += 3;
-        }
-    }
-}
 
-int encodePCM(double* analog, int samples, char* output, int bits) {
+int PCMencode(double* analog, int samples, char* output, int bits) {
     double maxV = analog[0], minV = analog[0];
     for (int i = 1; i < samples; i++) {
         if (analog[i] > maxV) maxV = analog[i];
         if (analog[i] < minV) minV = analog[i];
     }
     int levels = pow(2, bits);
-    double gap = (maxV - minV) / levels;
+    double step = (maxV - minV) / levels;
     int pos = 0;
     for (int i = 0; i < samples; i++) {
-        int quant = (int)((analog[i] - minV) / gap);
+        int quant = (int)((analog[i] - minV) / step);
         if (quant >= levels) quant = levels - 1;
         for (int j = bits - 1; j >= 0; j--) output[pos++] = ((quant >> j) & 1) ? '1' : '0';
     }
@@ -110,161 +133,160 @@ int encodePCM(double* analog, int samples, char* output, int bits) {
     return pos;
 }
 
-int encodeDelta(double* analog, int samples, char* output) {
-    double pred = 0, step = 0.5;
+int DeltaModulate(double* analog, int samples, char* output) {
+    double pred = 0, delta = 0.5;
     for (int i = 0; i < samples; i++) {
-        if (analog[i] > pred) { output[i] = '1'; pred += step; }
-        else { output[i] = '0'; pred -= step; }
+        if (analog[i] > pred) { output[i] = '1'; pred += delta; }
+        else { output[i] = '0'; pred -= delta; }
     }
     output[samples] = '\0';
     return samples;
 }
 
-void detectPalindrome(char* seq, int n) {
+void longestPalindrome(char* seq, int n) {
     int maxLen = 1, start = 0;
-    char* tmp = new char[2*n + 3];
-    int k = 0; tmp[k++] = '^';
-    for (int i = 0; i < n; i++) { tmp[k++] = '|'; tmp[k++] = seq[i]; }
-    tmp[k++] = '|'; tmp[k++] = '$';
-    int* pArr = new int[k]; memset(pArr, 0, sizeof(int)*k);
-    int c = 0, r = 0;
+    char* mod = new char[2*n + 3];
+    int k = 0; mod[k++] = '^';
+    for (int i = 0; i < n; i++) { mod[k++] = '|'; mod[k++] = seq[i]; }
+    mod[k++] = '|'; mod[k++] = '$';
+    int* P = new int[k]; memset(P, 0, sizeof(int)*k);
+    int center = 0, right = 0;
     for (int i = 1; i < k - 1; i++) {
-        int mirr = 2*c - i;
-        if (i < r) pArr[i] = min(r - i, pArr[mirr]);
-        while (tmp[i + pArr[i] + 1] == tmp[i - pArr[i] - 1]) pArr[i]++;
-        if (i + pArr[i] > r) { c = i; r = i + pArr[i]; }
-        if (pArr[i] > maxLen) { maxLen = pArr[i]; start = (i - pArr[i]) / 2; }
+        int mirror = 2*center - i;
+        if (i < right) P[i] = min(right - i, P[mirror]);
+        while (mod[i + P[i] + 1] == mod[i - P[i] - 1]) P[i]++;
+        if (i + P[i] > right) { center = i; right = i + P[i]; }
+        if (P[i] > maxLen) { maxLen = P[i]; start = (i - P[i]) / 2; }
     }
-    cout << "\nLongest Palindrome Segment: ";
+    cout << "\nLongest Palindrome in data: ";
     for (int i = start; i < start + maxLen; i++) cout << seq[i];
-    cout << " (Size: " << maxLen << ")\n";
-    delete[] tmp; delete[] pArr;
+    cout << " (Length: " << maxLen << ")\n";
+    delete[] mod; delete[] P;
 }
 
-void printZeros(int* arr, int n) {
-    int maxZero = 0, count = 0;
+void printLongestZeros(int* arr, int n) {
+    int maxZ = 0, cur = 0;
     for (int i = 0; i < n; i++) {
-        if (arr[i] == 0) count++;
-        else { maxZero = max(maxZero, count); count = 0; }
+        if (arr[i] == 0) cur++;
+        else { maxZ = max(maxZ, cur); cur = 0; }
     }
-    maxZero = max(maxZero, count);
-    if (maxZero > 0) cout << "Zero sequence length: " << maxZero << endl;
+    maxZ = max(maxZ, cur);
+    if (maxZ > 0) cout << "Longest zero sequence: " << maxZ << "\n";
 }
 
-void textDraw(float x, float y, const char* txt, void* font) {
+void drawText(float x, float y, const char* text, void* font) {
     glRasterPos2f(x, y);
-    for (int i = 0; txt[i] != '\0'; i++) glutBitmapCharacter(font, txt[i]);
+    for (int i = 0; text[i] != '\0'; i++) glutBitmapCharacter(font, text[i]);
 }
 
-void graphRender() {
+void renderWave() {
     glClear(GL_COLOR_BUFFER_BIT);
-    if (!bufferPtr || bufferSize == 0) { glFlush(); return; }
+    if (!waveBuffer || waveSize == 0) { glFlush(); return; }
     glColor3f(0, 0, 1);
     glBegin(GL_LINE_STRIP);
-    float step = 1.8 / bufferSize;
-    float scaleY = 0.35;
-    for (int i = 0; i < bufferSize; i++) {
+    float step = 1.8 / waveSize;
+    float scale = 0.35;
+    for (int i = 0; i < waveSize; i++) {
         float x1 = -0.9 + i * step;
         float x2 = -0.9 + (i + 1) * step;
-        float y = bufferPtr[i] * scaleY;
+        float y = waveBuffer[i] * scale;
         glVertex2f(x1, y);
         glVertex2f(x2, y);
-        if (i < bufferSize - 1) {
-            float y2 = bufferPtr[i+1] * scaleY;
+        if (i < waveSize - 1) {
+            float y2 = waveBuffer[i+1] * scale;
             glVertex2f(x2, y);
             glVertex2f(x2, y2);
         }
     }
     glEnd();
     glColor3f(0, 0, 0);
-    textDraw(-0.8, 0.85, headerLabel, GLUT_BITMAP_HELVETICA_18);
+    drawText(-0.8, 0.85, waveLabel, GLUT_BITMAP_HELVETICA_18);
     glFlush();
 }
 
-void setupScene() {
+void setupGL() {
     glClearColor(1, 1, 1, 1);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluOrtho2D(-1, 1, -1, 1);
 }
 
-void launchSignal(int* arr, int len, const char* lbl, bool man) {
-    bufferPtr = arr;
-    bufferSize = len;
-    strcpy(headerLabel, lbl);
-    halfCycle = man;
+void visualize(int* sig, int len, const char* lbl, bool man) {
+    waveBuffer = sig; waveSize = len;
+    strcpy(waveLabel, lbl);
+    isManchester = man;
     glutPostRedisplay();
 }
 
 int main(int argc, char** argv) {
-    cout << "Signal Encoder for macOS\n";
-    cout << "Select mode: 1) Digital  2) Analog\n> ";
+    cout << "Digital Signal Generator (macOS)\n";
+    cout << "Input Type: 1) Digital  2) Analog\n> ";
     int mode; cin >> mode;
 
-    char bitData[1000];
-    int bitLen = 0;
+    char bits[1000];
+    int len = 0;
 
     if (mode == 2) {
         cout << "1) PCM  2) Delta Modulation\n> ";
         int opt; cin >> opt;
-        cout << "Enter sample count: ";
+        cout << "Number of samples: ";
         int s; cin >> s;
-        double* vals = new double[s];
-        cout << "Input values: ";
-        for (int i = 0; i < s; i++) cin >> vals[i];
+        double* analog = new double[s];
+        cout << "Enter sample values: ";
+        for (int i = 0; i < s; i++) cin >> analog[i];
         if (opt == 1) {
             cout << "Bits per sample: ";
             int b; cin >> b;
-            bitLen = encodePCM(vals, s, bitData, b);
-        } else bitLen = encodeDelta(vals, s, bitData);
-        delete[] vals;
+            len = PCMencode(analog, s, bits, b);
+        } else len = DeltaModulate(analog, s, bits);
+        delete[] analog;
     } else {
         cout << "Binary stream: ";
-        cin >> bitData;
-        bitLen = strlen(bitData);
+        cin >> bits;
+        len = strlen(bits);
     }
 
-    detectPalindrome(bitData, bitLen);
+    longestPalindrome(bits, len);
 
-    cout << "\nChoose scheme:\n1.NRZ-L\n2.NRZ-I\n3.Manchester\n4.Diff Manchester\n5.AMI\n> ";
-    int enc; cin >> enc;
+    cout << "\nSelect Encoding Scheme:\n1.NRZ-L\n2.NRZ-I\n3.Manchester\n4.Diff Manchester\n5.AMI\n> ";
+    int choice; cin >> choice;
 
-    int* wave = nullptr;
-    int lenOut = 0;
-    char label[100];
-    bool mFlag = false;
+    int* sig = nullptr;
+    int sigLen = 0;
+    char lbl[100];
+    bool man = false;
 
-    switch (enc) {
-        case 1: lenOut = bitLen; wave = new int[lenOut]; codeNRZL(bitData, wave, bitLen); strcpy(label, "NRZ-L"); break;
-        case 2: lenOut = bitLen; wave = new int[lenOut]; codeNRZI(bitData, wave, bitLen); strcpy(label, "NRZ-I"); break;
-        case 3: lenOut = bitLen * 2; wave = new int[lenOut]; codeManchester(bitData, wave, bitLen); strcpy(label, "Manchester"); mFlag = true; break;
-        case 4: lenOut = bitLen * 2; wave = new int[lenOut]; codeDiffManchester(bitData, wave, bitLen); strcpy(label, "Diff Manchester"); mFlag = true; break;
+    switch (choice) {
+        case 1: sigLen = len; sig = new int[sigLen]; NRZLencode(bits, sig, len); strcpy(lbl, "NRZ-L"); break;
+        case 2: sigLen = len; sig = new int[sigLen]; NRZIencode(bits, sig, len); strcpy(lbl, "NRZ-I"); break;
+        case 3: sigLen = len*2; sig = new int[sigLen]; ManchesterEncode(bits, sig, len); strcpy(lbl, "Manchester"); man = true; break;
+        case 4: sigLen = len*2; sig = new int[sigLen]; DiffManchesterEncode(bits, sig, len); strcpy(lbl, "Diff Manchester"); man = true; break;
         case 5:
-            lenOut = bitLen; wave = new int[lenOut]; codeAMI(bitData, wave, bitLen); strcpy(label, "AMI");
-            cout << "Add scrambling? (1=Yes,0=No): "; int scr; cin >> scr;
+            sigLen = len; sig = new int[sigLen]; AMIencode(bits, sig, len); strcpy(lbl, "AMI");
+            cout << "Apply scrambling? (1=Yes,0=No): "; int scr; cin >> scr;
             if (scr == 1) {
                 cout << "1) B8ZS  2) HDB3\n> "; int type; cin >> type;
-                if (type == 1) { scrambleB8ZS(wave, lenOut); strcpy(label, "AMI+B8ZS"); }
-                else { scrambleHDB3(wave, lenOut); strcpy(label, "AMI+HDB3"); }
-                printZeros(wave, lenOut);
+                if (type == 1) { B8ZSscramble(sig, sigLen); strcpy(lbl, "AMI + B8ZS"); }
+                else { HDB3scramble(sig, sigLen); strcpy(lbl, "AMI + HDB3"); }
+                printLongestZeros(sig, sigLen);
             }
             break;
     }
 
-    cout << "\nEncoded sequence:\n";
-    for (int i = 0; i < lenOut; i++) cout << wave[i] << " ";
+    cout << "\nEncoded signal:\n";
+    for (int i = 0; i < sigLen; i++) cout << sig[i] << " ";
     cout << endl;
 
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB);
     glutInitWindowSize(1000, 600);
-    glutCreateWindow("macOS Signal Display");
-    setupScene();
-    launchSignal(wave, lenOut, label, mFlag);
-    glutDisplayFunc(graphRender);
-    cout << "Drawing waveform...\n";
+    glutCreateWindow("Digital Signal Visualization (macOS)");
+    setupGL();
+    visualize(sig, sigLen, lbl, man);
+    glutDisplayFunc(renderWave);
+    cout << "Rendering waveform...\n";
     glutMainLoop();
-    delete[] wave;
+
+    delete[] sig;
     return 0;
 }
-
