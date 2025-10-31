@@ -1,0 +1,44 @@
+# Compiler-generated files
+*.o
+*.out
+*.exe
+*.obj
+*.a
+*.so
+*.dylib
+
+# Compiled binary (your executable)
+DigitalSignalGenerator
+DigitalSignal
+SignalSim
+a.out
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+__MACOSX/
+
+# Temporary / backup files
+*~
+*.swp
+*.tmp
+*.bak
+*.log
+
+# IDE files (VS Code, Xcode, etc.)
+.vscode/
+.idea/
+*.code-workspace
+*.xcworkspace
+*.xcodeproj
+*.xcuserstate
+*.xcuserdata/
+
+# Generated documents
+*.pdf
+*.docx
+
+# Environment or config files
+.env
+.env.*
