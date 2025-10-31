@@ -9,6 +9,7 @@ int waveSize = 0;
 char waveLabel[120] = "";
 bool isManchester = false;
 
+// ---------------------- Encoding Functions ----------------------
 void NRZLencode(char* bits, int* signal, int n) {
     for (int i = 0; i < n; i++) signal[i] = (bits[i] == '1') ? 1 : -1;
 }
@@ -46,75 +47,67 @@ void AMIencode(char* bits, int* signal, int n) {
     }
 }
 
+// ---------------------- Scrambling Functions ----------------------
 void B8ZSscramble(int* signal, int len) {
-    // last non-zero polarity seen so far; default +1 (if none seen yet)
     int lastPolarity = 1;
     for (int i = 0; i <= len - 8; ++i) {
         if (signal[i] != 0) lastPolarity = signal[i];
 
-        // check 8 zeros starting at i
         bool allZeros = true;
         for (int j = 0; j < 8; ++j) {
             if (signal[i + j] != 0) { allZeros = false; break; }
         }
         if (!allZeros) continue;
 
-        int V = lastPolarity;    // violation = same as last non-zero
-        int B = -V;              // bipolar opposite
+        int V = lastPolarity;    // violation = same polarity
+        int B = -V;              // opposite polarity
 
-        // canonical B8ZS substitution (positions relative to i):
-        // i:0 i+1:0 i+2:0 i+3:V i+4:B i+5:0 i+6:B i+7:V
+        // B8ZS pattern
         signal[i + 3] = V;
         signal[i + 4] = B;
         signal[i + 5] = 0;
         signal[i + 6] = B;
         signal[i + 7] = V;
 
-        // update lastPolarity to the last non-zero we just put (i+7)
         lastPolarity = signal[i + 7];
-
-        // skip past the replaced block
         i += 7;
     }
 }
 
-
-
-
-void HDB3scramble(int* signal, int n) {
+// ✅ Your version of HDB3 integrated
+void scrambleHDB3(char* bits, int* encoded, int n) {
     int zeroCount = 0;
-    bool flag = true;      // toggles substitution rule between B00V and 000V
-    bool prevPositive = true; // tracks AMI polarity (true = +1, false = -1)
+    bool flag = true;      // toggles between B00V / 000V
+    bool prev = false;     // tracks AMI polarity (false=-1, true=+1)
 
     for (int i = 0; i < n; i++) {
-        if (signal[i] != 0) {
-            // Normal AMI pulse → update polarity and reset zero count
+        if (bits[i] == '1') {
+            encoded[i] = prev ? -1 : 1;
             zeroCount = 0;
             flag = !flag;
-            prevPositive = (signal[i] > 0);
+            prev = !prev;
         } else {
+            encoded[i] = 0;
             zeroCount++;
         }
 
         if (zeroCount == 4) {
             if (flag) {
-                // B00V pattern (even case)
-                signal[i - 3] = prevPositive ? -1 : 1;  // B = opposite polarity
-                signal[i] = prevPositive ? -1 : 1;      // V = opposite polarity
+                // B00V pattern
+                encoded[i-3] = prev ? -1 : 1;
+                encoded[i] = prev ? -1 : 1;
             } else {
-                // 000V pattern (odd case)
-                signal[i] = prevPositive ? 1 : -1;      // V = same polarity
+                // 000V pattern
+                encoded[i] = prev ? 1 : -1;
             }
-
             zeroCount = 0;
             flag = true;
-            prevPositive = (signal[i] > 0);
+            prev = (encoded[i] > 0);
         }
     }
 }
 
-
-
+// ---------------------- Analog Encoding ----------------------
 int PCMencode(double* analog, int samples, char* output, int bits) {
     double maxV = analog[0], minV = analog[0];
     for (int i = 1; i < samples; i++) {
@@ -143,6 +136,7 @@ int DeltaModulate(double* analog, int samples, char* output) {
     return samples;
 }
 
+// ---------------------- Helpers ----------------------
 void longestPalindrome(char* seq, int n) {
     int maxLen = 1, start = 0;
     char* mod = new char[2*n + 3];
@@ -174,6 +168,7 @@ void printLongestZeros(int* arr, int n) {
     if (maxZ > 0) cout << "Longest zero sequence: " << maxZ << "\n";
 }
 
+// ---------------------- Visualization ----------------------
 void drawText(float x, float y, const char* text, void* font) {
     glRasterPos2f(x, y);
     for (int i = 0; text[i] != '\0'; i++) glutBitmapCharacter(font, text[i]);
@@ -218,6 +213,7 @@ void visualize(int* sig, int len, const char* lbl, bool man) {
     glutPostRedisplay();
 }
 
+// ---------------------- Main ----------------------
 int main(int argc, char** argv) {
     cout << "Digital Signal Generator (macOS)\n";
     cout << "Input Type: 1) Digital  2) Analog\n> ";
@@ -257,18 +253,51 @@ int main(int argc, char** argv) {
     bool man = false;
 
     switch (choice) {
-        case 1: sigLen = len; sig = new int[sigLen]; NRZLencode(bits, sig, len); strcpy(lbl, "NRZ-L"); break;
-        case 2: sigLen = len; sig = new int[sigLen]; NRZIencode(bits, sig, len); strcpy(lbl, "NRZ-I"); break;
-        case 3: sigLen = len*2; sig = new int[sigLen]; ManchesterEncode(bits, sig, len); strcpy(lbl, "Manchester"); man = true; break;
-        case 4: sigLen = len*2; sig = new int[sigLen]; DiffManchesterEncode(bits, sig, len); strcpy(lbl, "Diff Manchester"); man = true; break;
+        case 1:
+            sigLen = len; sig = new int[sigLen];
+            NRZLencode(bits, sig, len);
+            strcpy(lbl, "NRZ-L");
+            break;
+
+        case 2:
+            sigLen = len; sig = new int[sigLen];
+            NRZIencode(bits, sig, len);
+            strcpy(lbl, "NRZ-I");
+            break;
+
+        case 3:
+            sigLen = len * 2; sig = new int[sigLen];
+            ManchesterEncode(bits, sig, len);
+            strcpy(lbl, "Manchester");
+            man = true;
+            break;
+
+        case 4:
+            sigLen = len * 2; sig = new int[sigLen];
+            DiffManchesterEncode(bits, sig, len);
+            strcpy(lbl, "Diff Manchester");
+            man = true;
+            break;
+
         case 5:
-            sigLen = len; sig = new int[sigLen]; AMIencode(bits, sig, len); strcpy(lbl, "AMI");
-            cout << "Apply scrambling? (1=Yes,0=No): "; int scr; cin >> scr;
+            sigLen = len; sig = new int[sigLen];
+            cout << "Apply scrambling? (1=Yes,0=No): ";
+            int scr; cin >> scr;
             if (scr == 1) {
-                cout << "1) B8ZS  2) HDB3\n> "; int type; cin >> type;
-                if (type == 1) { B8ZSscramble(sig, sigLen); strcpy(lbl, "AMI + B8ZS"); }
-                else { HDB3scramble(sig, sigLen); strcpy(lbl, "AMI + HDB3"); }
+                cout << "1) B8ZS  2) HDB3\n> ";
+                int type; cin >> type;
+                if (type == 1) {
+                    AMIencode(bits, sig, len);
+                    B8ZSscramble(sig, sigLen);
+                    strcpy(lbl, "AMI + B8ZS");
+                } else {
+                    scrambleHDB3(bits, sig, len);
+                    strcpy(lbl, "AMI + HDB3");
+                }
                 printLongestZeros(sig, sigLen);
+            } else {
+                AMIencode(bits, sig, len);
+                strcpy(lbl, "AMI");
             }
             break;
     }
